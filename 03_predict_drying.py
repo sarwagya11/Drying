@@ -21,6 +21,7 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for minimal environme
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 from scipy.optimize import fsolve
 
 
@@ -177,6 +178,19 @@ def _run_example() -> None:
     time_to_target = predict_time_to_mr(target_mr, params)
     print(f"\nPredicted time to reach MR={target_mr}: {time_to_target:.2f} min")
 
+    experimental_file = "T50_v0p60.csv"
+    experimental_path = ROOT_DIR / experimental_file
+    if not experimental_path.exists():
+        raise FileNotFoundError(
+            f"Experimental data file not found: {experimental_path}"
+        )
+
+    experimental_df = pd.read_csv(experimental_path)
+    t_exp_raw = experimental_df["time_min"].to_numpy(dtype=float)
+    t_exp_norm = t_exp_raw - t_exp_raw[0]
+    x_db = experimental_df["X_db"].to_numpy(dtype=float)
+    mr_exp = x_db / x_db[0]
+
     PLOT_PATH.parent.mkdir(parents=True, exist_ok=True)
     max_time = time_to_target * 1.2 if time_to_target > 0 else 60.0
     t_values = np.linspace(0.0, max_time, 200)
@@ -186,11 +200,20 @@ def _run_example() -> None:
     )
 
     plt.figure(figsize=(8, 5))
-    plt.plot(t_values, mr_values, label="Predicted MR")
+    plt.plot(t_values, mr_values, label="Predicted Curve", color="orange")
+    plt.scatter(
+        t_exp_norm,
+        mr_exp,
+        label="Experimental Data",
+        color="royalblue",
+        marker="o",
+        s=25,
+        alpha=0.8,
+    )
     plt.axhline(target_mr, color="red", linestyle="--", label=f"MR={target_mr}")
     plt.xlabel("Time (min)")
     plt.ylabel("Moisture Ratio (MR)")
-    plt.title("Predicted Drying Curve (Midilli-a Model)")
+    plt.title(f"Predicted Drying Curve vs Experimental Data ({experimental_file})")
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
