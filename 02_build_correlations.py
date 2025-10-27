@@ -1,60 +1,43 @@
 """Phase 2 correlation builder for Midilli-a parameters.
 
-This script loads the master Phase 1 results CSV, filters for the
-Midilli-a model parameters, and fits correlation models linking the
-parameters (a, k, n, b) to the process conditions. The ``k`` parameter is
-modelled using a linearised Arrhenius expression, while ``a``, ``n`` and
-``b`` employ standard multiple linear regression. The fitted models and
-the process-condition bounds are saved in the ``models`` directory.
+This script reads the master Phase 1 results dataset, filters the Midilli-a
+parameters, and fits correlation models that relate those parameters to the
+process conditions. All regressions are performed with ``statsmodels`` to
+provide full statistical summaries.
 """
 
 from __future__ import annotations
 
 import json
 import pickle
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict
 
 import numpy as np
 import pandas as pd
+import statsmodels.api as sm
 
 
+R_GAS_CONSTANT = 8.31446261815324  # J/(mol*K)
+ABSOLUTE_ZERO_C = 273.15
 ROOT_DIR = Path(__file__).resolve().parent
 DATA_PATH = ROOT_DIR / "phase1_out" / "phase1_full_results.csv"
 MODELS_DIR = ROOT_DIR / "models"
-R_GAS = 8.314462618  # J/(mol*K)
-ABSOLUTE_ZERO_C = 273.15
 
 
 def ensure_models_dir() -> None:
+    """Create the models directory if it does not exist."""
+
     MODELS_DIR.mkdir(exist_ok=True)
 
 
-@dataclass
-class LinearModel:
-    """Simple container for a linear regression model."""
+def load_phase1_results() -> pd.DataFrame:
+    """Load the Phase 1 CSV and validate required Midilli-a columns."""
 
-    target: str
-    feature_names: List[str]
-    intercept: float
-    coefficients: Dict[str, float]
-    notes: Dict[str, str]
+    if not DATA_PATH.exists():
+        raise FileNotFoundError(f"Phase 1 results CSV not found at: {DATA_PATH}")
 
-    def as_dict(self) -> Dict[str, object]:
-        return {
-            "target": self.target,
-            "feature_names": self.feature_names,
-            "intercept": self.intercept,
-            "coefficients": self.coefficients,
-            "notes": self.notes,
-        }
-
-
-def load_phase1_results(path: Path) -> pd.DataFrame:
-    if not path.exists():
-        raise FileNotFoundError(f"Phase 1 results CSV not found: {path}")
-    df = pd.read_csv(path)
+    df = pd.read_csv(DATA_PATH)
     required_columns = {
         "T_C",
         "v_ms",
@@ -67,152 +50,123 @@ def load_phase1_results(path: Path) -> pd.DataFrame:
     }
     missing = required_columns.difference(df.columns)
     if missing:
-        missing_list = ", ".join(sorted(missing))
-        raise ValueError(f"Missing required columns in input data: {missing_list}")
+        missing_columns = ", ".join(sorted(missing))
+        raise ValueError(f"Missing required columns in dataset: {missing_columns}")
+
     return df
 
 
-def fit_linear_regression(X: np.ndarray, y: np.ndarray) -> Tuple[float, np.ndarray]:
-    if X.ndim != 2:
-        raise ValueError("Feature matrix must be 2-D.")
-    if y.ndim != 1:
-        raise ValueError("Target vector must be 1-D.")
-    if X.shape[0] != y.shape[0]:
-        raise ValueError("Number of rows in X must match size of y.")
-    # Add intercept term
-    X_aug = np.column_stack([np.ones(X.shape[0]), X])
-    coeffs, *_ = np.linalg.lstsq(X_aug, y, rcond=None)
-    intercept = float(coeffs[0])
-    slopes = coeffs[1:]
-    return intercept, slopes
+def fit_arrhenius_model(df: pd.DataFrame) -> sm.regression.linear_model.RegressionResultsWrapper:
+    """Fit ln(k) against Arrhenius-style predictors."""
 
+    subset = df[
+        [
+            "Midilli-a_k",
+            "T_C",
+            "v_ms",
+            "RH_pct",
+            "thickness_mm",
+        ]
+    ].dropna()
 
-def build_arrhenius_model(df: pd.DataFrame) -> LinearModel:
-    subset = df[[
-        "Midilli-a_k",
-        "T_C",
-        "v_ms",
-        "RH_pct",
-        "thickness_mm",
-    ]].dropna()
-
-    # Ensure positive values for logarithmic transforms
-    positive_mask = (
+    mask_positive = (
         (subset["Midilli-a_k"] > 0)
         & (subset["v_ms"] > 0)
         & (subset["RH_pct"] > 0)
         & (subset["thickness_mm"] > 0)
     )
-    subset = subset.loc[positive_mask].copy()
+    subset = subset.loc[mask_positive].copy()
     if subset.empty:
-        raise ValueError("No valid rows available to fit the Arrhenius model for k.")
+        raise ValueError("No valid observations available for Arrhenius regression of k.")
 
-    T_abs = subset["T_C"].to_numpy(dtype=float) + ABSOLUTE_ZERO_C
-    features = np.column_stack([
-        1.0 / T_abs,
-        np.log(subset["v_ms"].to_numpy(dtype=float)),
-        np.log(subset["RH_pct"].to_numpy(dtype=float)),
-        np.log(subset["thickness_mm"].to_numpy(dtype=float)),
-    ])
+    temperature_abs = subset["T_C"].to_numpy(dtype=float) + ABSOLUTE_ZERO_C
+    features = pd.DataFrame(
+        {
+            "inv_T_abs": 1.0 / temperature_abs,
+            "ln_v_ms": np.log(subset["v_ms"].to_numpy(dtype=float)),
+            "ln_RH_pct": np.log(subset["RH_pct"].to_numpy(dtype=float)),
+            "ln_thickness_mm": np.log(subset["thickness_mm"].to_numpy(dtype=float)),
+        }
+    )
+    X = sm.add_constant(features, has_constant="add")
     y = np.log(subset["Midilli-a_k"].to_numpy(dtype=float))
-    feature_names = [
-        "inv_T_abs",
-        "ln_v_ms",
-        "ln_RH_pct",
-        "ln_thickness_mm",
-    ]
 
-    intercept, slopes = fit_linear_regression(features, y)
-    coefficients = {
-        name: float(value) for name, value in zip(feature_names, slopes)
-    }
-    model = LinearModel(
-        target="Midilli-a_k",
-        feature_names=feature_names,
-        intercept=intercept,
-        coefficients=coefficients,
-        notes={
-            "transforms": (
-                "ln(k) = intercept + inv_T_abs + ln_v_ms + ln_RH_pct + ln_thickness_mm"
-            ),
-            "T_abs_definition": "T_abs = T_C + 273.15",
-        },
-    )
+    model = sm.OLS(y, X).fit()
+    print(model.summary())
 
-    # Compute activation energy from the inverse-temperature coefficient
-    beta_inv_T = coefficients["inv_T_abs"]
-    activation_energy_kjmol = -beta_inv_T * R_GAS / 1000.0
-    print(f"Activation energy (Ea): {activation_energy_kjmol:.4f} kJ/mol")
+    beta_inv_T = model.params["inv_T_abs"]
+    activation_energy_kj_mol = -beta_inv_T * R_GAS_CONSTANT / 1000.0
+    print(f"Activation energy (Ea): {activation_energy_kj_mol:.6f} kJ/mol")
 
     return model
 
 
-def build_linear_model(df: pd.DataFrame, target_column: str) -> LinearModel:
-    subset = df[[
-        target_column,
-        "T_C",
-        "v_ms",
-        "RH_pct",
-        "thickness_mm",
-    ]].dropna()
+def fit_linear_model(
+    df: pd.DataFrame, target: str
+) -> sm.regression.linear_model.RegressionResultsWrapper:
+    """Fit a linear model for a Midilli-a parameter using process conditions."""
+
+    subset = df[
+        [
+            target,
+            "T_C",
+            "v_ms",
+            "RH_pct",
+            "thickness_mm",
+        ]
+    ].dropna()
 
     if subset.empty:
-        raise ValueError(f"No valid rows available to fit the model for {target_column}.")
+        raise ValueError(f"No valid observations available for regression of {target}.")
 
-    features = subset[["T_C", "v_ms", "RH_pct", "thickness_mm"]].to_numpy(dtype=float)
-    y = subset[target_column].to_numpy(dtype=float)
-    feature_names = ["T_C", "v_ms", "RH_pct", "thickness_mm"]
+    X = sm.add_constant(subset[["T_C", "v_ms", "RH_pct", "thickness_mm"]].astype(float), has_constant="add")
+    y = subset[target].to_numpy(dtype=float)
 
-    intercept, slopes = fit_linear_regression(features, y)
-    coefficients = {
-        name: float(value) for name, value in zip(feature_names, slopes)
-    }
-    model = LinearModel(
-        target=target_column,
-        feature_names=feature_names,
-        intercept=intercept,
-        coefficients=coefficients,
-        notes={"transforms": "linear"},
-    )
+    model = sm.OLS(y, X).fit()
+    print(model.summary())
+
     return model
 
 
-def save_model(model: LinearModel, filename: str) -> None:
-    path = MODELS_DIR / filename
-    with path.open("wb") as fh:
-        pickle.dump(model.as_dict(), fh)
+def save_model(model: sm.regression.linear_model.RegressionResultsWrapper, filename: str) -> None:
+    """Persist a fitted statsmodels OLS result."""
+
+    with (MODELS_DIR / filename).open("wb") as handle:
+        pickle.dump(model, handle)
 
 
 def save_process_bounds(df: pd.DataFrame) -> None:
-    bounds = {}
+    """Persist min/max bounds for the process-condition features."""
+
+    bounds: Dict[str, Dict[str, float]] = {}
     for column in ["T_C", "v_ms", "RH_pct", "thickness_mm"]:
-        series = df[column].dropna().to_numpy(dtype=float)
-        if series.size == 0:
+        values = df[column].dropna().to_numpy(dtype=float)
+        if values.size == 0:
             raise ValueError(f"No data available to compute bounds for {column}.")
         bounds[column] = {
-            "min": float(np.min(series)),
-            "max": float(np.max(series)),
+            "min": float(np.min(values)),
+            "max": float(np.max(values)),
         }
 
-    path = MODELS_DIR / "process_bounds.json"
-    with path.open("w", encoding="utf-8") as fh:
-        json.dump(bounds, fh, indent=2)
+    with (MODELS_DIR / "process_bounds.json").open("w", encoding="utf-8") as handle:
+        json.dump(bounds, handle, indent=2)
 
 
 def main() -> None:
     ensure_models_dir()
-    df = load_phase1_results(DATA_PATH)
+    df = load_phase1_results()
 
-    model_k = build_arrhenius_model(df)
+    model_k = fit_arrhenius_model(df)
     save_model(model_k, "model_k.pkl")
 
-    for target, filename in [
-        ("Midilli-a_a", "model_a.pkl"),
-        ("Midilli-a_n", "model_n.pkl"),
-        ("Midilli-a_b", "model_b.pkl"),
-    ]:
-        model = build_linear_model(df, target)
-        save_model(model, filename)
+    model_a = fit_linear_model(df, "Midilli-a_a")
+    save_model(model_a, "model_a.pkl")
+
+    model_n = fit_linear_model(df, "Midilli-a_n")
+    save_model(model_n, "model_n.pkl")
+
+    model_b = fit_linear_model(df, "Midilli-a_b")
+    save_model(model_b, "model_b.pkl")
 
     save_process_bounds(df)
 
