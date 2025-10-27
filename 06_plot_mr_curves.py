@@ -1,26 +1,41 @@
 """Plot MR vs time for all runs in a raw drying CSV file.
 
-This utility loads a CSV file containing drying experiment data, computes the
-moisture ratio (MR) for each run, and generates a single plot containing the
-MR–time curves for every run present in the file.
-
-Example usage::
+This module exposes both a command-line interface and importable helpers so it
+can be used from notebooks or other Python scripts. Typical CLI usage::
 
     python 06_plot_mr_curves.py T50_v1p1_velsweep.csv --output mr_plot.png
 
-If no output path is provided, the plot will be displayed in an interactive
-window (when supported by the execution environment).
+When the script is executed without an ``input_csv`` argument (for example when
+launched from an IPython kernel), the user is prompted for the path so that the
+utility no longer crashes immediately with an ``argparse`` error.
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib.util
+import pathlib
 from pathlib import Path
 from typing import Iterable
 
-import matplotlib.pyplot as plt
+
+def _require_dependency(module_name: str, package_name: str | None = None) -> None:
+    """Raise an informative error if *module_name* is missing."""
+
+    if importlib.util.find_spec(module_name) is None:
+        package = package_name or module_name
+        raise ModuleNotFoundError(
+            f"Required dependency '{package}' is not installed. "
+            f"Install it with 'pip install {package}'."
+        )
+
+
+_require_dependency("numpy", "numpy")
 import numpy as np
+_require_dependency("pandas", "pandas")
 import pandas as pd
+_require_dependency("matplotlib", "matplotlib")
+import matplotlib.pyplot as plt
 
 
 DEFAULT_TIME_COLUMN = "time_min"
@@ -92,10 +107,11 @@ def plot_mr_curves(
     return ax
 
 
-def parse_args(args: Iterable[str] | None = None) -> argparse.Namespace:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "input_csv",
+        nargs="?",
         type=Path,
         help="Path to the raw drying CSV file.",
     )
@@ -119,19 +135,68 @@ def parse_args(args: Iterable[str] | None = None) -> argparse.Namespace:
         type=Path,
         help="Optional path to save the generated plot as an image (e.g., PNG).",
     )
-    return parser.parse_args(args=args)
+    return parser
+
+
+def parse_args(args: Iterable[str] | None = None) -> argparse.Namespace:
+    return _build_parser().parse_args(args=args)
+
+
+def prompt_for_csv_path() -> Path:
+    """Prompt the user for a CSV file path when no CLI argument is provided."""
+
+    try:
+        response = input("Enter the path to the drying CSV file: ").strip()
+    except EOFError as exc:  # pragma: no cover - guard for non-interactive shells
+        raise SystemExit("No CSV path provided. Aborting.") from exc
+
+    if not response:
+        raise SystemExit("No CSV path provided. Aborting.")
+
+    return Path(response)
+
+
+def load_drying_csv(csv_path: pathlib.Path | str) -> pd.DataFrame:
+    """Load drying experiment data from ``csv_path`` with validation."""
+
+    path = Path(csv_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"CSV file not found: {path}")
+
+    df = pd.read_csv(path)
+    if df.empty:
+        raise ValueError(f"CSV file '{path}' is empty.")
+    return df
+
+
+def plot_mr_curves_from_csv(
+    csv_path: pathlib.Path | str,
+    *,
+    time_column: str = DEFAULT_TIME_COLUMN,
+    moisture_column: str = DEFAULT_MOISTURE_COLUMN,
+    run_column: str = DEFAULT_RUN_COLUMN,
+    ax: plt.Axes | None = None,
+) -> plt.Axes:
+    """Load a CSV file and plot its MR–time curves."""
+
+    df = load_drying_csv(csv_path)
+    return plot_mr_curves(
+        df,
+        time_column=time_column,
+        moisture_column=moisture_column,
+        run_column=run_column,
+        ax=ax,
+    )
 
 
 def main() -> None:
-    args = parse_args()
+    parser = _build_parser()
+    args = parser.parse_args()
 
-    if not args.input_csv.is_file():
-        raise FileNotFoundError(f"CSV file not found: {args.input_csv}")
+    input_csv = args.input_csv or prompt_for_csv_path()
 
-    df = pd.read_csv(args.input_csv)
-
-    ax = plot_mr_curves(
-        df,
+    ax = plot_mr_curves_from_csv(
+        input_csv,
         time_column=args.time_column,
         moisture_column=args.moisture_column,
         run_column=args.run_column,
