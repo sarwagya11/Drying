@@ -17,11 +17,6 @@ MODELS_DIR = ROOT_DIR / "models"
 ABSOLUTE_ZERO_C = 273.15
 R_GAS = 8.314462618  # J/(mol*K)
 TEMP_SWEEP_RUNS = ["T_40_v1p1", "T_45_v1p1", "T_50_v1p1_tempsweep"]
-TEMP_SWEEP_FALLBACKS = {
-    "T_40_v1p1": ["T40_v1p1"],
-    "T_45_v1p1": ["T45_v1p1"],
-    "T_50_v1p1_tempsweep": ["T_50_v1p1", "T50_v1p1"],
-}
 MIDILLI_COLUMNS = [
     "run_id",
     "T_C",
@@ -52,20 +47,6 @@ def load_midilli_dataframe() -> pd.DataFrame:
 
 def fit_arrhenius_model(df: pd.DataFrame) -> sm.regression.linear_model.RegressionResultsWrapper:
     subset = df[df["run_id"].isin(TEMP_SWEEP_RUNS)].copy()
-
-    if subset.shape[0] != len(TEMP_SWEEP_RUNS):
-        present_runs = set(subset["run_id"].unique())
-        missing_runs = [run for run in TEMP_SWEEP_RUNS if run not in present_runs]
-        for run in missing_runs:
-            fallback_ids = TEMP_SWEEP_FALLBACKS.get(run, [])
-            if not fallback_ids:
-                continue
-            fallback_subset = df[df["run_id"].isin(fallback_ids)].copy()
-            if not fallback_subset.empty:
-                fallback_subset["run_id"] = run
-                subset = pd.concat([subset, fallback_subset], ignore_index=True)
-
-    subset = subset.drop_duplicates(subset=["run_id"])
     subset = subset.dropna(subset=["T_C", "Midilli-a_k"])
 
     if subset.shape[0] != 3:
