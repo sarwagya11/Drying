@@ -11,6 +11,8 @@ import pandas as pd
 import statsmodels.api as sm
 
 
+R_GAS_CONSTANT = 8.31446261815324  # J/(mol*K)
+ABSOLUTE_ZERO_C = 273.15
 ROOT_DIR = Path(__file__).resolve().parent
 DATA_PATH = ROOT_DIR / "phase1_out" / "phase1_full_results.csv"
 MODELS_DIR = ROOT_DIR / "models"
@@ -32,8 +34,7 @@ FEATURE_COLUMNS = ["v_ms", "RH_pct", "thickness_mm"]
 
 
 def ensure_models_dir() -> None:
-    MODELS_DIR.mkdir(exist_ok=True)
-
+    """Create the models directory if it does not exist."""
 
 def load_midilli_dataframe() -> pd.DataFrame:
     if not DATA_PATH.exists():
@@ -82,7 +83,7 @@ def fit_linear_model(
     subset = df.dropna(subset=FEATURE_COLUMNS + [target_column]).copy()
 
     if subset.empty:
-        raise ValueError(f"No valid rows available to fit the model for {target_column}.")
+        raise ValueError(f"No valid observations available for regression of {target}.")
 
     X = sm.add_constant(subset[FEATURE_COLUMNS].astype(float))
     y = subset[target_column].astype(float)
