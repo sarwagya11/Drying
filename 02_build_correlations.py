@@ -11,6 +11,8 @@ import pandas as pd
 import statsmodels.api as sm
 
 
+R_GAS_CONSTANT = 8.31446261815324  # J/(mol*K)
+ABSOLUTE_ZERO_C = 273.15
 ROOT_DIR = Path(__file__).resolve().parent
 DATA_PATH = ROOT_DIR / "phase1_out" / "phase1_full_results.csv"
 MODELS_DIR = ROOT_DIR / "models"
